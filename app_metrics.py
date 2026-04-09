@@ -43,6 +43,6 @@ if st.button("RUN") and ticker1:
         df = df1
 
     # round values 2 decimals
-    df = df.applymap(lambda x: round(x,2) if isinstance(x,(int,float)) else x)
+    df = df.map(lambda x: round(x,2) if isinstance(x,(int,float)) else x)
 
     st.dataframe(df, use_container_width=True)

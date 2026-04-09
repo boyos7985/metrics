@@ -142,12 +142,14 @@ def check_roic_precise(ticker="AAPL", debug=False, seuil = 0.05):
 # FCF YIELD
 #########################################
 
-def calculate_fcf_yield(ticker):
-    t = yf.Ticker(ticker)
-    cash_flow = t.cashflow
-    market_cap = t.info.get('marketCap')
-    free_cash_flow = safe_get(cash_flow, ["Free Cash Flow"], 0)
-    if market_cap and market_cap > 0:
+def calculate_fcf_yield(ticker=None, info=None, cashflow=None, market_cap_local=None):
+    if info is None or cashflow is None:
+        t = yf.Ticker(ticker)
+        if info is None: info = t.info
+        if cashflow is None: cashflow = t.cashflow
+    market_cap = market_cap_local if market_cap_local is not None else (info.get('marketCap') or 0)
+    free_cash_flow = safe_get(cashflow, ["Free Cash Flow"], 0)
+    if free_cash_flow and market_cap > 0:
         return free_cash_flow / market_cap
     return 0
 
@@ -155,33 +157,43 @@ def calculate_fcf_yield(ticker):
 # SHAREHOLDER YIELD
 #########################################
 
-def calculate_shareholder_yield(ticker, debug=False):
+def calculate_shareholder_yield(ticker=None, debug=False, info=None, cashflow=None, market_cap_local=None):
     try:
-        t = yf.Ticker(ticker)
-        info = t.info
-        dividend_yield = info.get('dividendYield', 0) or 0
-        cash_flow = t.cashflow
+        if info is None or cashflow is None:
+            t = yf.Ticker(ticker)
+            if info is None: info = t.info
+            if cashflow is None: cashflow = t.cashflow
 
-        buybacks_method1 = abs(safe_get(cash_flow, [
-            "Repurchase Of Capital Stock", 
+        dividend_yield = info.get('dividendYield', 0) or 0
+
+        buybacks_method1 = abs(safe_get(cashflow, [
+            "Repurchase Of Capital Stock",
             "Common Stock Payments",
             "Purchase of Stock"
         ], 0))
 
-        net_issuance = safe_get(cash_flow, ["Net Common Stock Issuance"], 0)
+        net_issuance = safe_get(cashflow, ["Net Common Stock Issuance"], 0)
         buybacks_method2 = abs(net_issuance) if net_issuance < 0 else 0
 
         buybacks = max(buybacks_method1, buybacks_method2)
-        market_cap = info.get('marketCap')
+        market_cap = market_cap_local if market_cap_local is not None else (info.get('marketCap') or 0)
         if not market_cap or market_cap <= 0:
-            return dividend_yield
+            return dividend_yield, 1
 
         buyback_yield = buybacks / market_cap
-        shareholder_yield = (dividend_yield/100) + buyback_yield
-        return shareholder_yield
+        shareholder_yield = (dividend_yield / 100) + buyback_yield
+
+        net_income = info.get('netIncomeToCommon', 0) or 0
+        dividends_paid = (dividend_yield / 100) * market_cap
+        if net_income <= 0:
+            total_payout_ratio = 1
+        else:
+            total_payout_ratio = (dividends_paid + buybacks) / net_income
+
+        return shareholder_yield, total_payout_ratio
 
     except:
-        return 0
+        return 0, 1
 
 #########################################
 # WACC
@@ -562,86 +574,19 @@ def evaluer_qualite_marges(metrics):
     
     return positives, attentions
 
-def calculate_deep_value_growth_metric(n_ticker, roic = 0, FCF_yield = 0, target_min=0.30):
+def calculate_deep_value_growth_metric(n_ticker=None, roic=0, FCF_yield=0, total_payout_ratio=1, target_min=0.30):
     """
-    Calcule le métrique: ROIC * (1 - Payout Ratio) + Earnings Yield
+    Calcule le métrique: ROIC * (1 - Payout Ratio) + FCF Yield
     Target: ≥ 30-40% pour du 'deep value with growth'
     """
     try:
-        ticker = yf.Ticker(n_ticker)
-        info = ticker.info
-        # 1. Payout Ratio (Dividende / Bénéfice net)
-        payout_ratio = info.get('payoutRatio')
-        
-        net_income = safe_get(ticker.financials, ["Net Income", "Net Income Applicable To Common Shares"], 0)
-        
-        # Get dividend information
-        dividend_yield = info.get('dividendYield', 0) or 0
-        
-        # Get buybacks from cash flow statement - CORRECTION ICI
-        cash_flow = ticker.cashflow
-        
-        # Méthode 1: Direct buyback items (POSITIFS dans le cash flow)
-        buybacks_method1 = abs(safe_get(cash_flow, [
-            "Repurchase Of Capital Stock", 
-            "Common Stock Payments",
-            "Purchase of Stock"
-        ], 0))
-        
-        # Méthode 2: Net Common Stock Issuance NÉGATIF = buybacks
-        net_issuance = safe_get(cash_flow, ["Net Common Stock Issuance"], 0)
-        if net_issuance < 0:
-            buybacks_method2 = abs(net_issuance)  # Negative = buybacks
-        else:
-            buybacks_method2 = 0
-        
-        # Prendre la valeur la plus cohérente
-        buybacks = max(buybacks_method1, buybacks_method2)
-        
-        # Get market capitalization
-        market_cap = info.get('marketCap')
-        if market_cap is None or market_cap <= 0:
-            return dividend_yield
-        
-        
-        dividends_paid = (dividend_yield or 0) * market_cap
-        print(f"dividends paid of {n_ticker} is {dividends_paid}")
-        print(f"buybacks paid of {n_ticker} is {buybacks}")
-        print(f"net income of {n_ticker} is {net_income}")
-        
-        payout_ratio = (dividends_paid + buybacks) / net_income
-        
-        print(f"payout ratio of {n_ticker} is {payout_ratio}")
-        
-        # Vérification des données manquantes
-        if None in [roic, payout_ratio, FCF_yield]:
-            missing = []
-            if roic is None: missing.append('roic')
-            if payout_ratio is None: missing.append('Payout Ratio')
-            if FCF_yield is None: missing.append('FCF Yield')
-            print(f"Données manquantes: {missing}")
+        if None in [roic, total_payout_ratio, FCF_yield]:
             return None, None
-        
-        # Calcul du métrique
-        expected_growth = roic * (1 - payout_ratio)
+        expected_growth = roic * (1 - total_payout_ratio)
         deep_value_metric = expected_growth + FCF_yield
-        
-        # Vérification si le critère est satisfait
         meets_criteria = deep_value_metric >= target_min
-        
-        details = {
-            'roic': roic,
-            'payout_ratio': payout_ratio,
-            'FCF_yield': FCF_yield,
-            'expected_growth': expected_growth,
-            'deep_value_metric': deep_value_metric,
-            'target_min': target_min
-        }
-        
         return meets_criteria, deep_value_metric
-        
     except Exception as e:
-        print(f"Erreur dans le calcul: {e}")
         return None, None
 #########################################
 # ASSEMBLEUR FINAL POUR STREAMLIT
@@ -653,6 +598,14 @@ def compute_all_metrics(ticker):
 
     t = yf.Ticker(ticker)
     info = t.info
+    t_cashflow = t.cashflow
+
+    # ------------------- FX-adjusted market cap (même logique que script_base.py) -------------------
+    trading_ccy = info.get('currency', 'USD')
+    fin_ccy = info.get('financialCurrency', trading_ccy)
+    fx_rate = get_exchange_rate(trading_ccy, fin_ccy) if trading_ccy != fin_ccy else 1.0
+    raw_market_cap = info.get('marketCap', 0) or 0
+    market_cap_local = raw_market_cap * fx_rate
 
     # ------------------- prix + ATH -------------------
     hist = t.history(period="max")
@@ -676,12 +629,12 @@ def compute_all_metrics(ticker):
     # ROIC
     _, roc_value, avg_ic = check_roic_precise(ticker, debug=False)
 
-    # FCF yield
-    fcf_yield = calculate_fcf_yield(ticker)
+    # FCF yield (avec market_cap_local en devise financière)
+    fcf_yield = calculate_fcf_yield(ticker, info=info, cashflow=t_cashflow, market_cap_local=market_cap_local)
     points_fcf = fcf_yield*300 if fcf_yield else None
 
-    # shareholder yield
-    shareholder_yield = calculate_shareholder_yield(ticker)
+    # shareholder yield (retourne aussi total_payout_ratio)
+    shareholder_yield, total_payout_ratio = calculate_shareholder_yield(ticker, info=info, cashflow=t_cashflow, market_cap_local=market_cap_local)
     points_shr_y = shareholder_yield*100 if shareholder_yield else None
 
     # WACC
@@ -708,7 +661,6 @@ def compute_all_metrics(ticker):
     points_asset_t = turn_res*15 if turn_res else None
 
     # qualitative margin
-    # 1) calcul trend
     qm_bool, qm_metrics = check_margin_gap_trend(ticker)
     if isinstance(qm_metrics, dict):
         positives, attentions = evaluer_qualite_marges(qm_metrics)
@@ -720,8 +672,8 @@ def compute_all_metrics(ticker):
         positive_qual_margins = None
         points_qual_margins = None
 
-    # deep value growth metric
-    _, deep_value_growth = calculate_deep_value_growth_metric(ticker, roic=roc_value, FCF_yield=fcf_yield)
+    # deep value growth metric (utilise total_payout_ratio issu de shareholder_yield)
+    _, deep_value_growth = calculate_deep_value_growth_metric(ticker, roic=roc_value, FCF_yield=fcf_yield, total_payout_ratio=total_payout_ratio)
     dvg_points = deep_value_growth*200 if deep_value_growth else None
 
     # revenue last 3
@@ -783,14 +735,9 @@ def compute_all_metrics(ticker):
         distance_52w = (last_price - low_52w) / low_52w * 100
         points_52w_low = max(0, 50 - distance_52w)
 
-    # market cap en USD
+    # market cap en USD (market_cap_local déjà calculé en haut)
     market_cap_usd = None
     points_mktcap = 0
-    trading_ccy = info.get('currency', 'USD')
-    fin_ccy = info.get('financialCurrency', trading_ccy)
-    fx_rate = get_exchange_rate(trading_ccy, fin_ccy) if trading_ccy != fin_ccy else 1.0
-    raw_market_cap = info.get('marketCap', 0) or 0
-    market_cap_local = raw_market_cap * fx_rate
     if market_cap_local > 0:
         fx_to_usd = get_exchange_rate(fin_ccy, 'USD')
         market_cap_usd = market_cap_local * fx_to_usd

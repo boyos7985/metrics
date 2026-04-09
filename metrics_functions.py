@@ -4,6 +4,8 @@ import numpy as np
 import math
 from datetime import datetime, timedelta
 
+_fx_cache = {}
+
 ############################################
 # Utilitaires de récupération de données
 ############################################
@@ -16,6 +18,42 @@ def safe_get(df, keys, period=0):
             except:
                 return 0
     return 0
+
+def get_exchange_rate(from_currency, to_currency):
+    """Récupère le taux de change entre deux devises avec cache"""
+    if from_currency == to_currency:
+        return 1.0
+    pair = (from_currency, to_currency)
+    if pair in _fx_cache:
+        return _fx_cache[pair]
+    try:
+        ticker = yf.Ticker(f"{from_currency}{to_currency}=X")
+        rate = ticker.info.get('regularMarketPrice')
+        if rate and rate > 0:
+            _fx_cache[pair] = rate
+            _fx_cache[(to_currency, from_currency)] = 1.0 / rate
+            return rate
+    except:
+        pass
+    rates_to_usd = {
+        'USD': 1.0, 'EUR': 1.08, 'GBP': 1.27, 'JPY': 0.0067, 'CNY': 0.138,
+        'HKD': 0.128, 'AUD': 0.65, 'CAD': 0.74, 'CHF': 1.13, 'SEK': 0.095,
+        'NOK': 0.093, 'DKK': 0.14, 'NZD': 0.60, 'SGD': 0.75, 'KRW': 0.00073,
+        'TWD': 0.031, 'INR': 0.012, 'BRL': 0.17, 'ZAR': 0.055, 'MXN': 0.058,
+        'PLN': 0.25, 'TRY': 0.029, 'IDR': 0.000062, 'MYR': 0.22, 'PHP': 0.017,
+        'ILS': 0.28, 'CZK': 0.043, 'HUF': 0.0027, 'SAR': 0.267, 'AED': 0.272,
+        'THB': 0.028, 'CLP': 0.0010, 'COP': 0.00024, 'PEN': 0.27,
+        'QAR': 0.275, 'KWD': 3.26, 'BHD': 2.65, 'OMR': 2.60, 'EGP': 0.020,
+        'VND': 0.000040, 'PKR': 0.0036, 'NGN': 0.00063, 'KES': 0.0077,
+    }
+    from_to_usd = rates_to_usd.get(from_currency)
+    to_to_usd = rates_to_usd.get(to_currency)
+    if from_to_usd and to_to_usd:
+        rate = from_to_usd / to_to_usd
+        _fx_cache[pair] = rate
+        return rate
+    return 1.0
+
 
 def get_rate_free(fallback=0.04):
     try:
@@ -385,7 +423,43 @@ def get_annual_revenues(ticker):
         return rev_series.sort_index()
     except Exception:
         return None
-        
+
+
+def get_annual_ebitda(ticker=None, financials=None):
+    """Retourne la série annuelle d'EBITDA depuis les financials yfinance."""
+    try:
+        if financials is None:
+            financials = yf.Ticker(ticker).financials
+        fin = financials
+        if fin is None or fin.empty:
+            return None
+        for possible in ['EBITDA', 'Ebitda']:
+            if possible in fin.index:
+                series = fin.loc[possible].dropna().astype(float)
+                if not series.empty:
+                    return series.sort_index()
+        ebit_idx = None
+        for possible in ['EBIT', 'Operating Income', 'OperatingIncome']:
+            if possible in fin.index:
+                ebit_idx = possible
+                break
+        da_idx = None
+        for possible in ['Reconciled Depreciation', 'Depreciation And Amortization', 'DepreciationAndAmortization']:
+            if possible in fin.index:
+                da_idx = possible
+                break
+        if ebit_idx is None or da_idx is None:
+            return None
+        ebit_series = fin.loc[ebit_idx].dropna().astype(float)
+        da_series = fin.loc[da_idx].dropna().astype(float)
+        common_idx = ebit_series.index.intersection(da_series.index)
+        if len(common_idx) < 2:
+            return None
+        return (ebit_series.loc[common_idx] + da_series.loc[common_idx]).sort_index()
+    except Exception:
+        return None
+
+
 def check_margin_gap_trend(ticker, years=3):
     """
     Analyse si l'écart entre marge brute et marge nette a augmenté consécutivement sur les X dernières années
@@ -666,13 +740,177 @@ def compute_all_metrics(ticker):
     score_roic_s, _ = score_roic_stability(ticker)
     points_growth_roic = score_roic_s*35
 
+    # ---- NOUVELLES MÉTRIQUES (même méthodologie que script_base.py) ----
+
+    # beta
+    beta = get_beta(info)
+    points_beta = (1 - abs(beta)) * 25
+
+    # ebitda series (réutilisée par plusieurs métriques)
+    ebitda_series = get_annual_ebitda(ticker, financials=is_)
+    revs_series = get_annual_revenues(ticker)
+
+    # incr_ebitda_margin = delta_EBITDA / delta_Revenue (2 dernières années)
+    incr_ebitda_margin = None
+    points_incr_ebitda_margin = 0
+    if ebitda_series is not None and len(ebitda_series) >= 2 and revs_series is not None and len(revs_series) >= 2:
+        common_dates = sorted(ebitda_series.index.intersection(revs_series.index))
+        if len(common_dates) >= 2:
+            delta_ebitda = ebitda_series[common_dates[-1]] - ebitda_series[common_dates[-2]]
+            delta_rev = revs_series[common_dates[-1]] - revs_series[common_dates[-2]]
+            rev_prev = revs_series[common_dates[-2]]
+            if delta_rev > 0 and rev_prev != 0 and (delta_rev / abs(rev_prev)) >= 0.02:
+                incr_ebitda_margin = (delta_ebitda / delta_rev) * 100
+                if incr_ebitda_margin > 90:
+                    incr_ebitda_margin = None
+                else:
+                    points_incr_ebitda_margin = min(100, max(0, incr_ebitda_margin))
+
+    # distance au 52w low
+    distance_52w = None
+    points_52w_low = 0
+    low_52w = info.get('fiftyTwoWeekLow')
+    if low_52w is not None and low_52w > 0 and last_price and last_price > 0:
+        distance_52w = (last_price - low_52w) / low_52w * 100
+        points_52w_low = max(0, 50 - distance_52w)
+
+    # market cap en USD
+    market_cap_usd = None
+    points_mktcap = 0
+    trading_ccy = info.get('currency', 'USD')
+    fin_ccy = info.get('financialCurrency', trading_ccy)
+    fx_rate = get_exchange_rate(trading_ccy, fin_ccy) if trading_ccy != fin_ccy else 1.0
+    raw_market_cap = info.get('marketCap', 0) or 0
+    market_cap_local = raw_market_cap * fx_rate
+    if market_cap_local > 0:
+        fx_to_usd = get_exchange_rate(fin_ccy, 'USD')
+        market_cap_usd = market_cap_local * fx_to_usd
+        if market_cap_usd < 50e6:
+            points_mktcap = 50
+        elif market_cap_usd < 300e6:
+            points_mktcap = 40
+        elif market_cap_usd < 2e9:
+            points_mktcap = 25
+        elif market_cap_usd < 10e9:
+            points_mktcap = 10
+
+    # ROA change (amélioration du ROA sur 2 ans)
+    roa_change = None
+    points_roa_change = 0
+    try:
+        bs = t.balance_sheet
+        ni_idx = None
+        for possible in ['Net Income', 'NetIncome', 'Net Income Common Stockholders']:
+            if possible in is_.index:
+                ni_idx = possible
+                break
+        ta_idx = None
+        for possible in ['Total Assets', 'TotalAssets']:
+            if possible in bs.index:
+                ta_idx = possible
+                break
+        if ni_idx and ta_idx:
+            ni_ser = is_.loc[ni_idx].dropna().astype(float)
+            ta_ser = bs.loc[ta_idx].dropna().astype(float)
+            common = sorted(ni_ser.index.intersection(ta_ser.index))
+            if len(common) >= 2:
+                roa_prev = ni_ser[common[-2]] / ta_ser[common[-2]] if ta_ser[common[-2]] != 0 else None
+                roa_curr = ni_ser[common[-1]] / ta_ser[common[-1]] if ta_ser[common[-1]] != 0 else None
+                if roa_prev is not None and roa_curr is not None:
+                    roa_change = roa_curr - roa_prev
+                    points_roa_change = roa_change * 200
+    except Exception:
+        pass
+
+    # EBITDA growth vs assets growth
+    ebitda_gt_assets = False
+    ebitda_growth = None
+    points_ebitda_gt_assets = 0
+    try:
+        bs = t.balance_sheet
+        ta_idx = None
+        for possible in ['Total Assets', 'TotalAssets']:
+            if possible in bs.index:
+                ta_idx = possible
+                break
+        if ebitda_series is not None and len(ebitda_series) >= 2 and ta_idx:
+            ta_ser_e = bs.loc[ta_idx].dropna().astype(float).sort_index()
+            common = sorted(ebitda_series.index.intersection(ta_ser_e.index))
+            if len(common) >= 2:
+                ebitda_g = (ebitda_series[common[-1]] - ebitda_series[common[-2]]) / abs(ebitda_series[common[-2]]) if ebitda_series[common[-2]] != 0 else None
+                assets_g = (ta_ser_e[common[-1]] - ta_ser_e[common[-2]]) / abs(ta_ser_e[common[-2]]) if ta_ser_e[common[-2]] != 0 else None
+                ebitda_growth = ebitda_g
+                if ebitda_g is not None and assets_g is not None and ebitda_g > 0 and assets_g > 0 and ebitda_g > assets_g:
+                    ebitda_gt_assets = True
+                    points_ebitda_gt_assets = 30
+    except Exception:
+        pass
+
+    # EBITDA margin (dernière année)
+    ebitda_margin_val = None
+    points_ebitda_margin = 0
+    if ebitda_series is not None and revs_series is not None:
+        common = sorted(ebitda_series.index.intersection(revs_series.index))
+        if common and revs_series[common[-1]] != 0:
+            ebitda_margin_val = ebitda_series[common[-1]] / revs_series[common[-1]]
+            if ebitda_margin_val <= 0.95:
+                points_ebitda_margin = max(0, ebitda_margin_val * 100)
+
+    # forward PE
+    forward_pe = info.get('forwardPE')
+    points_forward_pe = 0
+    if forward_pe is not None and 0 < forward_pe < 100:
+        points_forward_pe = max(0, (20 - forward_pe) * 1.5)
+
+    # PEG ratio (avec fallback CAGR EPS)
+    peg = info.get('pegRatio')
+    points_peg = 0
+    if (peg is None or peg == 0) and pe_value not in (None, 0) and pe_value > 0:
+        try:
+            eps_idx = None
+            for possible in ['Diluted EPS', 'Basic EPS', 'EPS']:
+                if possible in is_.index:
+                    eps_idx = possible
+                    break
+            if eps_idx is not None:
+                eps_ser = is_.loc[eps_idx].dropna().astype(float).sort_index()
+                if len(eps_ser) >= 2:
+                    eps_first = eps_ser.iloc[0]
+                    eps_last = eps_ser.iloc[-1]
+                    n_years = len(eps_ser) - 1
+                    if eps_first > 0 and eps_last > 0:
+                        eps_cagr = (eps_last / eps_first) ** (1 / n_years) - 1
+                        if eps_cagr > 0:
+                            peg = pe_value / (eps_cagr * 100)
+        except Exception:
+            pass
+    if peg is not None and peg > 0:
+        points_peg = max(0, (1 - peg) * 20) if peg < 1 else 0
+
+    # earnings surprise
+    earnings_surprise = None
+    points_earnings_surprise = 0
+    try:
+        earnings_dates = t.earnings_dates
+        if earnings_dates is not None and not earnings_dates.empty:
+            recent = earnings_dates.dropna(subset=['Surprise(%)'])
+            if not recent.empty:
+                earnings_surprise = recent.iloc[0]['Surprise(%)'] / 100
+                if earnings_surprise > 0:
+                    points_earnings_surprise = min(15, earnings_surprise * 30)
+    except Exception:
+        pass
+
     # total points
     all_points = [
         points_pe, points_pb, points_cr, points_de,
         points_fcf, points_shr_y, points_eva, points_ev_eb,
-        points_net_margin, points_asset_t, points_qual_margins, dvg_points, 
+        points_net_margin, points_asset_t, points_qual_margins, dvg_points,
         points_rev, points_growth_assets, points_growth_sales,
-        points_improve_debtEqRatio, points_growth_roic
+        points_improve_debtEqRatio, points_growth_roic,
+        points_beta, points_incr_ebitda_margin, points_52w_low, points_mktcap,
+        points_roa_change, points_ebitda_gt_assets, points_ebitda_margin,
+        points_forward_pe, points_peg, points_earnings_surprise
     ]
     total_points = sum([p for p in all_points if p not in (None, np.nan)])
 
@@ -714,6 +952,27 @@ def compute_all_metrics(ticker):
         'points_growth_sales' : points_growth_sales,
         'points_improve_debtEqRatio' : points_improve_debtEqRatio,
         'points_growth_roic' : points_growth_roic,
+        'beta' : beta,
+        'points_beta' : points_beta,
+        'incr_ebitda_margin' : incr_ebitda_margin,
+        'points_incr_ebitda_margin' : points_incr_ebitda_margin,
+        'distance_52w_low_pct' : distance_52w,
+        'points_52w_low' : points_52w_low,
+        'market_cap_usd' : market_cap_usd,
+        'points_mktcap' : points_mktcap,
+        'roa_change' : roa_change,
+        'points_roa_change' : points_roa_change,
+        'ebitda_growth' : ebitda_growth,
+        'ebitda_gt_assets' : ebitda_gt_assets,
+        'points_ebitda_gt_assets' : points_ebitda_gt_assets,
+        'ebitda_margin' : ebitda_margin_val,
+        'points_ebitda_margin' : points_ebitda_margin,
+        'forward_pe' : forward_pe,
+        'points_forward_pe' : points_forward_pe,
+        'peg_ratio' : peg,
+        'points_peg' : points_peg,
+        'earnings_surprise' : earnings_surprise,
+        'points_earnings_surprise' : points_earnings_surprise,
         'Total_points' : total_points
     }
 

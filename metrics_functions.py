@@ -238,6 +238,15 @@ def check_net_margin(info, seuil_min=0.1):
     except:
         return True, None
 
+def get_beta(info):
+    """Retourne le beta depuis yfinance info, fallback 1.0."""
+    beta = info.get("beta") if info.get("beta") is not None else 1.0
+    try:
+        return float(beta)
+    except Exception:
+        return 1.0
+
+
 def get_gross_margin(info):
     gm = info.get("grossMargins") or 0
     try:

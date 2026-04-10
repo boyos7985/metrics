@@ -678,6 +678,9 @@ def compute_all_metrics(ticker):
 
     # revenue last 3
     is_ = t.financials
+    # Date de comptabilité (dernière colonne des financials)
+    accounting_date = is_.columns[0].strftime('%Y-%m-%d') if not is_.empty else None
+
     if not is_.empty and "Total Revenue" in is_.index:
         revs = is_.loc["Total Revenue"]
         rev_up = check_last_three_revenues(revs)
@@ -872,6 +875,7 @@ def compute_all_metrics(ticker):
 
     final = {
         'Ticker': ticker,
+        'Accounting_Date': accounting_date,
         'LastPrice': last_price,
         'ATH_Value': ath_value,
         'Discount_From_ATH': discount_from_ath,

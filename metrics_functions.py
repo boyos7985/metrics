@@ -588,6 +588,75 @@ def calculate_deep_value_growth_metric(n_ticker=None, roic=0, FCF_yield=0, total
         return meets_criteria, deep_value_metric
     except Exception as e:
         return None, None
+
+#########################################
+# SLOAN ACCRUALS + QUALITY COMPOSITE
+#########################################
+
+def compute_sloan_quality(ticker=None, financials=None, cashflow=None, balance_sheet=None):
+    """
+    Sloan accruals = (Net Income - OCF) / avg_total_assets
+    Quality composite (0-6):
+      +1 si accruals < 0.05
+      +1 si accruals < 0 (bonus)
+      +1 si CFO/NI > 0.9 sur 5 ans
+      +1 si CapEx/CFO < 0.6 sur 3 ans
+      +1 si FCF positif toutes les 5 années
+      +1 si volatilité FCF (std/mean) < 0.5
+    """
+    import numpy as np
+    try:
+        if financials is None or cashflow is None or balance_sheet is None:
+            t = yf.Ticker(ticker)
+            if financials is None: financials = t.financials
+            if cashflow is None: cashflow = t.cashflow
+            if balance_sheet is None: balance_sheet = t.balance_sheet
+
+        OCF_KEYS = ['Operating Cash Flow', 'Cash From Operations',
+                    'Net Cash Provided By Operating Activities']
+        CAPX_KEYS = ['Capital Expenditure', 'Capital Expenditures']
+        NI_KEYS = ['Net Income', 'Net Income Common Stockholders']
+
+        ni0 = safe_get(financials, NI_KEYS, 0)
+        cfo_t0 = safe_get(cashflow, OCF_KEYS, 0)
+        a0 = safe_get(balance_sheet, ['Total Assets'], 0)
+        a1 = safe_get(balance_sheet, ['Total Assets'], 1)
+
+        sloan_accruals = None
+        if ni0 and cfo_t0 and a0 and a1:
+            avg_ta = (a0 + a1) / 2
+            if avg_ta != 0:
+                sloan_accruals = round((ni0 - cfo_t0) / avg_ta, 4)
+
+        q = 0
+        if sloan_accruals is not None:
+            if sloan_accruals < 0.05: q += 1
+            if sloan_accruals < 0:    q += 1
+
+        n_periods = min(5, len(financials.columns))
+        ni_list  = [safe_get(financials, NI_KEYS, p) for p in range(n_periods)]
+        cfo_list = [safe_get(cashflow, OCF_KEYS, p) for p in range(n_periods)]
+        ni_sum  = sum(v for v in ni_list  if v is not None)
+        cfo_sum = sum(v for v in cfo_list if v is not None)
+        if ni_sum > 0 and cfo_sum / ni_sum > 0.9: q += 1
+
+        n3 = min(3, len(cashflow.columns))
+        cap_3y = [abs(safe_get(cashflow, CAPX_KEYS, p) or 0) for p in range(n3)]
+        cfo_3y = [v for v in cfo_list[:n3] if v is not None]
+        if cfo_3y and sum(cfo_3y) > 0 and sum(cap_3y) / sum(cfo_3y) < 0.6: q += 1
+
+        cap_all  = [abs(safe_get(cashflow, CAPX_KEYS, p) or 0) for p in range(n_periods)]
+        fcf_list = [c - x for c, x in zip(cfo_list, cap_all) if c is not None]
+        if len(fcf_list) == 5 and all(f > 0 for f in fcf_list): q += 1
+        if len(fcf_list) >= 3:
+            fm = np.mean(fcf_list)
+            if abs(fm) > 1e6 and np.std(fcf_list) / abs(fm) < 0.5: q += 1
+
+        return sloan_accruals, q
+
+    except Exception:
+        return None, None
+
 #########################################
 # ASSEMBLEUR FINAL POUR STREAMLIT
 #########################################
@@ -860,6 +929,15 @@ def compute_all_metrics(ticker):
     except Exception:
         pass
 
+    # sloan accruals + quality composite
+    sloan_accruals, quality_composite = compute_sloan_quality(
+        ticker, financials=is_, cashflow=t_cashflow, balance_sheet=t.balance_sheet
+    )
+    bonus_sloan_neg  = 8  if (sloan_accruals is not None and sloan_accruals < 0)                            else 0
+    bonus_sloan_low  = 5  if (sloan_accruals is not None and 0 <= sloan_accruals < 0.05)                    else 0
+    bonus_sloan_warn = -10 if (sloan_accruals is not None and sloan_accruals > 0.10)                        else 0
+    bonus_quality    = (quality_composite or 0) * 3
+
     # total points
     all_points = [
         points_pe, points_pb, points_cr, points_de,
@@ -869,7 +947,8 @@ def compute_all_metrics(ticker):
         points_improve_debtEqRatio, points_growth_roic,
         points_beta, points_incr_ebitda_margin, points_52w_low, points_mktcap,
         points_roa_change, points_ebitda_gt_assets, points_ebitda_margin,
-        points_forward_pe, points_peg, points_earnings_surprise
+        points_forward_pe, points_peg, points_earnings_surprise,
+        bonus_sloan_neg, bonus_sloan_low, bonus_sloan_warn, bonus_quality
     ]
     total_points = sum([p for p in all_points if p not in (None, np.nan)])
 
@@ -933,6 +1012,10 @@ def compute_all_metrics(ticker):
         'points_peg' : points_peg,
         'earnings_surprise' : earnings_surprise,
         'points_earnings_surprise' : points_earnings_surprise,
+        'sloan_accruals' : sloan_accruals,
+        'bonus_sloan' : bonus_sloan_neg + bonus_sloan_low + bonus_sloan_warn,
+        'quality_composite' : quality_composite,
+        'bonus_quality' : bonus_quality,
         'Total_points' : total_points
     }
 

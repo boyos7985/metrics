@@ -623,7 +623,7 @@ def compute_sloan_quality(ticker=None, financials=None, cashflow=None, balance_s
         a1 = safe_get(balance_sheet, ['Total Assets'], 1)
 
         sloan_accruals = None
-        if ni0 and cfo_t0 and a0 and a1:
+        if ni0 is not None and cfo_t0 is not None and a0 and a1:
             avg_ta = (a0 + a1) / 2
             if avg_ta != 0:
                 sloan_accruals = round((ni0 - cfo_t0) / avg_ta, 4)
@@ -1019,9 +1019,9 @@ def compute_all_metrics(ticker):
         'Total_points' : total_points
     }
 
-    # arrondir à 2 decimales si float
+    # arrondir à 2 decimales si float (4 pour sloan_accruals)
     for k,v in final.items():
         if isinstance(v,(int,float)) and v is not None:
-            final[k] = round(v,2)
+            final[k] = round(v, 4) if k == 'sloan_accruals' else round(v, 2)
 
     return final

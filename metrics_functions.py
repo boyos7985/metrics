@@ -1,6 +1,8 @@
 import yfinance as yf
 import streamlit as st
 import pandas as pd
+from curl_cffi import requests as curl_requests
+_YF_SESSION = curl_requests.Session(impersonate="chrome")
 import numpy as np
 import math
 from datetime import datetime, timedelta
@@ -28,7 +30,7 @@ def get_exchange_rate(from_currency, to_currency):
     if pair in _fx_cache:
         return _fx_cache[pair]
     try:
-        ticker = yf.Ticker(f"{from_currency}{to_currency}=X")
+        ticker = yf.Ticker(f"{from_currency}{to_currency}=X", session=_YF_SESSION)
         rate = ticker.info.get('regularMarketPrice')
         if rate and rate > 0:
             _fx_cache[pair] = rate
@@ -58,7 +60,7 @@ def get_exchange_rate(from_currency, to_currency):
 
 def get_rate_free(fallback=0.04):
     try:
-        tnx = yf.Ticker("^TNX")
+        tnx = yf.Ticker("^TNX", session=_YF_SESSION)
         hist = tnx.history(period="1d")
         if hist.empty:
             return fallback
@@ -87,7 +89,7 @@ def check_current_ratio(info, seuil=1.5):
 #########################################
 
 def check_get_debt_to_equity(ticker,seuil = 0.5, period=0, debug=False):
-    t = yf.Ticker(ticker)
+    t = yf.Ticker(ticker, session=_YF_SESSION)
     bs = t.balance_sheet
 
     total_debt = safe_get(bs, ["Total Debt"], period)
@@ -122,7 +124,7 @@ def invested_capital_precise(balance_sheet, period=0, debug=False):
     return invested_capital
 
 def check_roic_precise(ticker="AAPL", debug=False, seuil = 0.05):
-    t = yf.Ticker(ticker)
+    t = yf.Ticker(ticker, session=_YF_SESSION)
     income_stmt = t.financials
     balance_sheet = t.balance_sheet
 
@@ -145,7 +147,7 @@ def check_roic_precise(ticker="AAPL", debug=False, seuil = 0.05):
 
 def calculate_fcf_yield(ticker=None, info=None, cashflow=None, market_cap_local=None):
     if info is None or cashflow is None:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=_YF_SESSION)
         if info is None: info = t.info
         if cashflow is None: cashflow = t.cashflow
     market_cap = market_cap_local if market_cap_local is not None else (info.get('marketCap') or 0)
@@ -161,7 +163,7 @@ def calculate_fcf_yield(ticker=None, info=None, cashflow=None, market_cap_local=
 def calculate_shareholder_yield(ticker=None, debug=False, info=None, cashflow=None, market_cap_local=None):
     try:
         if info is None or cashflow is None:
-            t = yf.Ticker(ticker)
+            t = yf.Ticker(ticker, session=_YF_SESSION)
             if info is None: info = t.info
             if cashflow is None: cashflow = t.cashflow
 
@@ -202,7 +204,7 @@ def calculate_shareholder_yield(ticker=None, debug=False, info=None, cashflow=No
 
 def calculate_wacc(ticker: str, rf: float = 0.04, market_premium: float = 0.06) -> float:
     try:
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(ticker, session=_YF_SESSION)
         info = stock.info or {}
         E = info.get("marketCap") or 0
         balance = stock.balance_sheet
@@ -269,7 +271,7 @@ def get_gross_margin(info):
 
 def check_asset_turnover_financials(ticker, seuil_min=0.3):
     try:
-        Ticker = yf.Ticker(ticker)
+        Ticker = yf.Ticker(ticker, session=_YF_SESSION)
         financials =Ticker.financials
         total_revenue = safe_get(financials, ["Total Revenue"], 0)
         bs = Ticker.balance_sheet
@@ -299,7 +301,7 @@ def check_last_three_revenues(revs, min_increase=0.05):
     return True
 
 def score_total_assets_growth(ticker, years=4):
-    bs = yf.Ticker(ticker).balance_sheet
+    bs = yf.Ticker(ticker, session=_YF_SESSION).balance_sheet
     assets = [safe_get(bs, ["Total Assets"], i) for i in range(years-1, -1, -1)]
     growth_years = sum(assets[i] <= assets[i+1] for i in range(len(assets)-1))
     score = growth_years / (len(assets)-1)
@@ -307,7 +309,7 @@ def score_total_assets_growth(ticker, years=4):
 
 # --- 2️⃣ Sales growth ---
 def score_sales_growth(ticker, years=4):
-    is_ = yf.Ticker(ticker).financials
+    is_ = yf.Ticker(ticker, session=_YF_SESSION).financials
     sales = [safe_get(is_, ["Total Revenue"], i) for i in range(years-1, -1, -1)]
     growth_years = sum(sales[i] <= sales[i+1] for i in range(len(sales)-1))
     score = growth_years / (len(sales)-1)
@@ -315,7 +317,7 @@ def score_sales_growth(ticker, years=4):
 
 # --- 3️⃣ Debt-to-Equity ratio ---
 def score_debt_to_equity(ticker, years=4):
-    bs = yf.Ticker(ticker).balance_sheet
+    bs = yf.Ticker(ticker, session=_YF_SESSION).balance_sheet
     ratios = []
     for i in range(years-1, -1, -1):
         total_debt = safe_get(bs, ["Total Debt", "Short Long Term Debt Total", "Total Liabilities"], i)
@@ -331,7 +333,7 @@ def get_debt_to_equity(ticker, period=0, debug=False):
     Calcule le Debt-to-Equity Ratio à partir du bilan.
     period=0 : dernier exercice
     """
-    t = yf.Ticker(ticker)
+    t = yf.Ticker(ticker, session=_YF_SESSION)
     bs = t.balance_sheet
 
     total_debt = safe_get(bs, ["Total Debt"], period)
@@ -367,7 +369,7 @@ def score_roic_stability(ticker, years=4, tolerance=0.03, debug=False):
     - Utilise EXACTEMENT la même logique que check_roic_precise (NOPAT / avg(IC sur 2 ans)).
     - Score = 1 si le ROIC est stable (+/- tolerance) ou en hausse.
     """
-    t = yf.Ticker(ticker)
+    t = yf.Ticker(ticker, session=_YF_SESSION)
     is_ = t.financials
     bs = t.balance_sheet
     roics = []
@@ -421,7 +423,7 @@ def score_roic_stability(ticker, years=4, tolerance=0.03, debug=False):
         
 def get_annual_revenues(ticker):
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=_YF_SESSION)
         fin = t.financials
         if fin is None or fin.empty:
             return None
@@ -451,7 +453,7 @@ def get_annual_ebitda(ticker=None, financials=None):
     """Retourne la série annuelle d'EBITDA depuis les financials yfinance."""
     try:
         if financials is None:
-            financials = yf.Ticker(ticker).financials
+            financials = yf.Ticker(ticker, session=_YF_SESSION).financials
         fin = financials
         if fin is None or fin.empty:
             return None
@@ -488,7 +490,7 @@ def check_margin_gap_trend(ticker, years=3):
     Retourne True si tendance à la hausse persistante + métriques détaillées
     """
     try:
-        Ticker = yf.Ticker(ticker)
+        Ticker = yf.Ticker(ticker, session=_YF_SESSION)
         # Obtenir les données historiques
         hist_financials = Ticker.financials
         
@@ -608,7 +610,7 @@ def compute_sloan_quality(ticker=None, financials=None, cashflow=None, balance_s
     import numpy as np
     try:
         if financials is None or cashflow is None or balance_sheet is None:
-            t = yf.Ticker(ticker)
+            t = yf.Ticker(ticker, session=_YF_SESSION)
             if financials is None: financials = t.financials
             if cashflow is None: cashflow = t.cashflow
             if balance_sheet is None: balance_sheet = t.balance_sheet
@@ -667,7 +669,7 @@ def compute_all_metrics(ticker):
     import numpy as np
     import yfinance as yf
 
-    t = yf.Ticker(ticker)
+    t = yf.Ticker(ticker, session=_YF_SESSION)
     info = t.info
     t_cashflow = t.cashflow
 

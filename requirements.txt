@@ -1,4 +1,4 @@
-yfinance 
-pandas 
-numpy 
-streamlit 
+yfinance>=1.2.2
+pandas
+numpy
+streamlit

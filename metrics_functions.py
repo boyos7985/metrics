@@ -1,4 +1,5 @@
 import yfinance as yf
+import streamlit as st
 import pandas as pd
 import numpy as np
 import math
@@ -661,6 +662,7 @@ def compute_sloan_quality(ticker=None, financials=None, cashflow=None, balance_s
 # ASSEMBLEUR FINAL POUR STREAMLIT
 #########################################
 
+@st.cache_data(ttl=3600, show_spinner="Fetching data from Yahoo Finance...")
 def compute_all_metrics(ticker):
     import numpy as np
     import yfinance as yf

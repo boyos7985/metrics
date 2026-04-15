@@ -1,5 +1,4 @@
-yfinance
-pandas
-numpy
-streamlit
-curl_cffi
+yfinance 
+pandas 
+numpy 
+streamlit 

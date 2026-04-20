@@ -233,10 +233,14 @@ def check_wacc(ticker="AAPL", debug=False, seuil=0.08, rf=0.04, market_premium=0
 # OTHER METRICS
 #########################################
 
-def check_ev_ebitda(info, seuil=15):
+def check_ev_ebitda(info, seuil=15, fx_rate=1.0):
     try:
         enterprise_value = info.get('enterpriseValue')
         ebitda = info.get('ebitda')
+        # enterpriseValue is in trading currency, ebitda is in financialCurrency
+        # fx_rate converts trading currency -> financial currency
+        if enterprise_value and fx_rate and fx_rate != 1.0:
+            enterprise_value = enterprise_value * fx_rate
         ev_ebitda = enterprise_value / ebitda if enterprise_value and ebitda else None
         return True, ev_ebitda
     except:
@@ -717,7 +721,7 @@ def compute_all_metrics(ticker):
     points_eva = Eco_Val_Added*200 if Eco_Val_Added else None
 
     # EV/EBITDA
-    _, ev_ebit_res = check_ev_ebitda(info)
+    _, ev_ebit_res = check_ev_ebitda(info, fx_rate=fx_rate)
     points_ev_eb = (3 - ev_ebit_res)*9 if ev_ebit_res else None
 
     # net margin

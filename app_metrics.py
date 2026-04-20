@@ -15,11 +15,6 @@ with col2:
 
 if st.button("RUN") and ticker1:
 
-    import subprocess, sys
-    subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yfinance", "-q"], check=True)
-    import importlib, yfinance
-    importlib.reload(yfinance)
-
     try:
         # FIRST STOCK
         data1 = compute_all_metrics(ticker1)
